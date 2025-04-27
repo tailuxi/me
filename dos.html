@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DOS 模拟器</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #C0C0C0;
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            line-height: 1.2;
+            margin: 0;
+            padding: 10px;
+            overflow: hidden;
+        }
+        
+        #dos-container {
+            width: 100%;
+            height: 100vh;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
+        
+        #prompt {
+            display: flex;
+            align-items: center;
+        }
+        
+        #command-input {
+            background-color: transparent;
+            border: none;
+            color: inherit;
+            font-family: inherit;
+            font-size: inherit;
+            outline: none;
+            flex-grow: 1;
+            caret-color: #C0C0C0;
+        }
+        
+        .command-line {
+            display: flex;
+            margin-bottom: 5px;
+        }
+        
+        .prompt-text {
+            margin-right: 5px;
+            white-space: pre;
+        }
+        
+        .output {
+            margin-bottom: 5px;
+            white-space: pre-wrap;
+        }
+        
+        .error {
+            color: #FF0000;
+        }
+        
+        .success {
+            color: #00FF00;
+        }
+        
+        .dir-item {
+            display: flex;
+        }
+        
+        .dir-name {
+            width: 12em;
+        }
+        
+        .dir-size {
+            width: 8em;
+        }
+        
+        .blinking-cursor {
+            animation: blink 1s step-end infinite;
+        }
+        
+        @keyframes blink {
+            from, to { opacity: 1; }
+            50% { opacity: 0; }
+        }
+        
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 10px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #000;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div id="dos-container">
+        <div class="output">
+  ______   ______     ______     __  __     ______    
+ /\  ___\ /\  __ \   /\  ___\   /\ \_\ \   /\  ___\   
+ \ \  __\ \ \ \/\ \  \ \ \____  \ \  __ \  \ \  __\   
+  \ \_\    \ \_____\  \ \_____\  \ \_\ \_\  \ \_____\ 
+   \/_/     \/_____/   \/_____/   \/_/\/_/   \/_____/ 
+                                                      
+        </div>
+        <div class="output">
+Microsoft(R) MS-DOS(R) Version 6.22
+(C)Copyright Microsoft Corp 1981-1994.
+        </div>
+        <div class="output">
+C:\>_
+        </div>
+        <div id="prompt">
+            <span class="prompt-text">C:\></span>
+            <input type="text" id="command-input" autofocus>
+            <span class="blinking-cursor">_</span>
+        </div>
+    </div>
+
+    <script>
+        // 文件系统模拟
+        const fileSystem = {
+            'C:': {
+                type: 'drive',
+                contents: {
+                    'AUTOEXEC.BAT': { type: 'file', size: 128, content: '@ECHO OFF\nPATH=C:\\DOS;C:\\WINDOWS\nPROMPT $p$g\nSET TEMP=C:\\TEMP' },
+                    'CONFIG.SYS': { type: 'file', size: 64, content: 'DEVICE=C:\\DOS\\HIMEM.SYS\nDOS=HIGH,UMB\nFILES=30\nBUFFERS=20' },
+                    'DOS': { type: 'dir', contents: {
+                        'COMMAND.COM': { type: 'file', size: 54645 },
+                        'EDIT.COM': { type: 'file', size: 413 },
+                        'FORMAT.COM': { type: 'file', size: 32911 },
+                        'HELP.EXE': { type: 'file', size: 257718 },
+                        'MEM.EXE': { type: 'file', size: 32150 },
+                        'MORE.COM': { type: 'file', size: 2618 },
+                        'XCOPY.EXE': { type: 'file', size: 15820 }
+                    }},
+                    'WINDOWS': { type: 'dir', contents: {
+                        'WIN.COM': { type: 'file', size: 102400 },
+                        'SYSTEM.INI': { type: 'file', size: 2048 },
+                        'WIN.INI': { type: 'file', size: 4096 }
+                    }},
+                    'GAMES': { type: 'dir', contents: {
+                        'DOOM': { type: 'dir', contents: {
+                            'DOOM.EXE': { type: 'file', size: 557056 }
+                        }},
+                        'WOLF3D': { type: 'dir', contents: {
+                            'WOLF3D.EXE': { type: 'file', size: 262144 }
+                        }}
+                    }}
+                }
+            }
+        };
+
+        // 当前目录和路径
+        let currentPath = ['C:'];
+        let commandHistory = [];
+        let historyIndex = -1;
+
+        // DOM 元素
+        const dosContainer = document.getElementById('dos-container');
+        const commandInput = document.getElementById('command-input');
+        const prompt = document.getElementById('prompt');
+
+        // 初始化
+        commandInput.focus();
+
+        // 获取当前目录对象
+        function getCurrentDir() {
+            let dir = fileSystem;
+            for (const part of currentPath) {
+                dir = dir[part].contents;
+            }
+            return dir;
+        }
+
+        // 解析路径
+        function resolvePath(path) {
+            if (!path) return { dir: getCurrentDir(), name: '' };
+
+            const parts = path.split(/[\\/]/).filter(p => p !== '');
+            let dir = fileSystem;
+            let start = 0;
+
+            // 处理绝对路径
+            if (path.startsWith('\\') || /^[A-Za-z]:/.test(path)) {
+                if (/^[A-Za-z]:/.test(path)) {
+                    const drive = parts[0].toUpperCase();
+                    if (!fileSystem[drive]) return null;
+                    dir = fileSystem[drive].contents;
+                    start = 1;
+                } else {
+                    dir = fileSystem[currentPath[0]].contents;
+                    start = 0;
+                }
+            } else {
+                // 相对路径
+                dir = getCurrentDir();
+            }
+
+            // 遍历路径
+            for (let i = start; i < parts.length - 1; i++) {
+                const part = parts[i].toUpperCase();
+                if (!dir[part] || dir[part].type !== 'dir') return null;
+                dir = dir[part].contents;
+            }
+
+            return {
+                dir: dir,
+                name: parts.length > 0 ? parts[parts.length - 1].toUpperCase() : ''
+            };
+        }
+
+        // 执行命令
+        function executeCommand(command) {
+            const parts = command.trim().split(/\s+/);
+            const cmd = parts[0].toUpperCase();
+            const args = parts.slice(1);
+
+            addOutput(`C:\\> ${command}`, 'command-line');
+
+            switch (cmd) {
+                case 'HELP':
+                    cmdHelp();
+                    break;
+                case 'DIR':
+                    cmdDir(args);
+                    break;
+                case 'CD':
+                    cmdCd(args);
+                    break;
+                case 'TYPE':
+                    cmdType(args);
+                    break;
+                case 'CLS':
+                    cmdCls();
+                    break;
+                case 'TIME':
+                    cmdTime();
+                    break;
+                case 'DATE':
+                    cmdDate();
+                    break;
+                case 'VER':
+                    cmdVer();
+                    break;
+                case 'EXIT':
+                    window.close();
+                    break;
+                case 'MEM':
+                    cmdMem();
+                    break;
+                case 'EDIT':
+                    cmdEdit(args);
+                    break;
+                case '':
+                    break;
+                default:
+                    addOutput(`Bad command or file name: ${cmd}`, 'error');
+            }
+
+            addPrompt();
+        }
+
+        // HELP 命令
+        function cmdHelp() {
+            addOutput(`For more information on a specific command, type HELP command-name
+ASSOC    Displays or modifies file extension associations.
+AT       Schedules commands and programs to run on a computer.
+ATTRIB   Displays or changes file attributes.
+CD       Displays the name of or changes the current directory.
+CLS      Clears the screen.
+CMD      Starts a new instance of the Windows command interpreter.
+COLOR    Sets the default console foreground and background colors.
+COMP     Compares the contents of two files or sets of files.
+COPY     Copies one or more files to another location.
+DATE     Displays or sets the date.
+DEL      Deletes one or more files.
+DIR      Displays a list of files and subdirectories in a directory.
+DISKCOMP Compares the contents of two floppy disks.
+DISKCOPY Copies the contents of one floppy disk to another.
+DOSKEY   Edits command lines, recalls commands, and creates macros.
+ECHO     Displays messages, or turns command echoing on or off.
+EDIT     Starts the MS-DOS editor.
+EXIT     Quits the CMD.EXE program (command interpreter).
+FC       Compares two files or sets of files, and displays the differences.
+FIND     Searches for a text string in a file or files.
+FORMAT   Formats a disk for use with Windows.
+HELP     Provides Help information for Windows commands.
+LABEL    Creates, changes, or deletes the volume label of a disk.
+MD       Creates a directory.
+MEM      Displays the amount of used and free memory in your system.
+MORE     Displays output one screen at a time.
+MOVE     Moves one or more files from one directory to another directory.
+PATH     Displays or sets a search path for executable files.
+PRINT    Prints a text file.
+PROMPT   Changes the Windows command prompt.
+RD       Removes a directory.
+REN      Renames a file or files.
+SET      Displays, sets, or removes Windows environment variables.
+TIME     Displays or sets the system time.
+TITLE    Sets the window title for a CMD.EXE session.
+TYPE     Displays the contents of a text file.
+VER      Displays the Windows version.
+VOL      Displays a disk volume label and serial number.
+XCOPY    Copies files and directory trees.`);
+        }
+
+        // DIR 命令
+        function cmdDir(args) {
+            const path = args.length > 0 ? args[0] : '.';
+            const resolved = resolvePath(path);
+            
+            if (!resolved) {
+                addOutput(`Path not found: ${path}`, 'error');
+                return;
+            }
+
+            const dir = resolved.name ? (resolved.dir[resolved.name] && resolved.dir[resolved.name].type === 'dir' ? resolved.dir[resolved.name].contents : null) : resolved.dir;
+            
+            if (!dir) {
+                addOutput(`File not found: ${path}`, 'error');
+                return;
+            }
+
+            const items = Object.keys(dir).sort();
+            let dirCount = 0;
+            let fileCount = 0;
+            let totalSize = 0;
+            
+            addOutput(` Directory of ${currentPath.join('\\')}\\${resolved.name || ''}`);
+            addOutput('');
+            
+            for (const item of items) {
+                if (dir[item].type === 'dir') {
+                    dirCount++;
+                    addOutput(`<div class="dir-item"><span class="dir-name">${item}</span><span class="dir-type">DIR</span></div>`);
+                } else {
+                    fileCount++;
+                    totalSize += dir[item].size || 0;
+                    addOutput(`<div class="dir-item"><span class="dir-name">${item}</span><span class="dir-size">${formatSize(dir[item].size)}</span></div>`);
+                }
+            }
+            
+            addOutput(`\t\t${fileCount} File(s)\t${totalSize} bytes`);
+            addOutput(`\t\t${dirCount} Dir(s)\t\t${getFreeSpace()} bytes free`);
+        }
+
+        // CD 命令
+        function cmdCd(args) {
+            if (args.length === 0) {
+                addOutput(currentPath.join('\\'));
+                return;
+            }
+
+            const path = args[0];
+            if (path === '..') {
+                if (currentPath.length > 1) {
+                    currentPath.pop();
+                }
+                return;
+            }
+
+            if (path === '\\') {
+                currentPath = [currentPath[0]];
+                return;
+            }
+
+            if (/^[A-Za-z]:$/.test(path)) {
+                const drive = path.toUpperCase();
+                if (fileSystem[drive]) {
+                    currentPath = [drive];
+                    return;
+                } else {
+                    addOutput(`Invalid drive specification`, 'error');
+                    return;
+                }
+            }
+
+            const resolved = resolvePath(path);
+            if (!resolved) {
+                addOutput(`Path not found: ${path}`, 'error');
+                return;
+            }
+
+            if (resolved.name) {
+                const item = resolved.dir[resolved.name];
+                if (!item || item.type !== 'dir') {
+                    addOutput(`Directory not found: ${path}`, 'error');
+                    return;
+                }
+                currentPath.push(resolved.name);
+            }
+        }
+
+        // TYPE 命令
+        function cmdType(args) {
+            if (args.length === 0) {
+                addOutput(`Required parameter missing`, 'error');
+                return;
+            }
+
+            const path = args[0];
+            const resolved = resolvePath(path);
+            
+            if (!resolved || !resolved.name) {
+                addOutput(`File not found: ${path}`, 'error');
+                return;
+            }
+
+            const item = resolved.dir[resolved.name];
+            if (!item || item.type !== 'file') {
+                addOutput(`File not found: ${path}`, 'error');
+                return;
+            }
+
+            if (item.content) {
+                addOutput(item.content);
+            } else {
+                addOutput(`Unable to display binary file`, 'error');
+            }
+        }
+
+        // CLS 命令
+        function cmdCls() {
+            dosContainer.innerHTML = '';
+        }
+
+        // TIME 命令
+        function cmdTime() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString();
+            addOutput(`Current time is ${timeStr}`);
+            addOutput(`Enter new time: `);
+        }
+
+        // DATE 命令
+        function cmdDate() {
+            const now = new Date();
+            const dateStr = now.toLocaleDateString();
+            addOutput(`Current date is ${dateStr}`);
+            addOutput(`Enter new date (mm-dd-yy): `);
+        }
+
+        // VER 命令
+        function cmdVer() {
+            addOutput(`MS-DOS Version 6.22`);
+        }
+
+        // MEM 命令
+        function cmdMem() {
+            addOutput(`Memory Type           Total       Used        Free
+----------------  --------   --------    --------
+Conventional        640K        120K        520K
+Upper                0K          0K          0K
+Reserved             0K          0K          0K
+Extended (XMS)   65,536K     16,384K     49,152K
+----------------  --------   --------    --------
+Total memory     66,176K     16,504K     49,672K
+
+Total under 1 MB   640K        120K        520K
+
+Largest executable program size        520K (532,448 bytes)
+Largest free upper memory block         0K (0 bytes)
+MS-DOS is resident in the high memory area.`);
+        }
+
+        // EDIT 命令
+        function cmdEdit(args) {
+            if (args.length === 0) {
+                addOutput(`MS-DOS Editor - Version 2.0
+Copyright (C) Microsoft Corp 1987-1993. All rights reserved.
+
+Press Enter to see the survival guide, or Esc to exit.`);
+                return;
+            }
+
+            const path = args[0];
+            const resolved = resolvePath(path);
+            
+            if (!resolved || !resolved.name) {
+                addOutput(`File not found: ${path}`, 'error');
+                return;
+            }
+
+            const item = resolved.dir[resolved.name];
+            if (item && item.type !== 'file') {
+                addOutput(`Unable to edit: ${path}`, 'error');
+                return;
+            }
+
+            addOutput(`MS-DOS Editor - Editing ${path}
+${item && item.content ? item.content : ''}
+
+Press F3 to save, Esc to exit.`);
+        }
+
+        // 添加输出
+        function addOutput(text, className = '') {
+            const output = document.createElement('div');
+            output.className = `output ${className}`;
+            output.innerHTML = text;
+            dosContainer.appendChild(output);
+            dosContainer.scrollTop = dosContainer.scrollHeight;
+        }
+
+        // 添加命令输入行
+        function addCommandLine(command) {
+            const line = document.createElement('div');
+            line.className = 'command-line';
+            line.innerHTML = `<span class="prompt-text">C:\\></span><span>${command}</span>`;
+            dosContainer.appendChild(line);
+            dosContainer.scrollTop = dosContainer.scrollHeight;
+        }
+
+        // 添加提示符
+        function addPrompt() {
+            prompt.style.display = 'flex';
+            commandInput.value = '';
+            commandInput.focus();
+        }
+
+        // 格式化文件大小
+        function formatSize(bytes) {
+            if (!bytes) return '';
+            return bytes.toLocaleString() + ' bytes';
+        }
+
+        // 获取空闲空间
+        function getFreeSpace() {
+            return (1024 * 1024 * 1024).toLocaleString();
+        }
+
+        // 事件监听
+        commandInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const command = commandInput.value.trim();
+                if (command) {
+                    commandHistory.push(command);
+                    historyIndex = commandHistory.length;
+                    executeCommand(command);
+                }
+            } else if (e.key === 'ArrowUp') {
+                if (commandHistory.length > 0) {
+                    if (historyIndex > 0) {
+                        historyIndex--;
+                    }
+                    commandInput.value = commandHistory[historyIndex] || '';
+                }
+                e.preventDefault();
+            } else if (e.key === 'ArrowDown') {
+                if (commandHistory.length > 0) {
+                    if (historyIndex < commandHistory.length - 1) {
+                        historyIndex++;
+                        commandInput.value = commandHistory[historyIndex];
+                    } else {
+                        historyIndex = commandHistory.length;
+                        commandInput.value = '';
+                    }
+                }
+                e.preventDefault();
+            }
+        });
+
+        // 初始提示
+        addOutput(`Type HELP for a list of available commands.`);
+    </script>
+</body>
+</html>
